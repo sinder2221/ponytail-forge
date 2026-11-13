@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "ponytail-forge",
   "description": "Local marketplace for ponytail-forge, a fork of ponytail with a prompt optimizer.",
-  "owner": { "name": "local" },
+  "owner": { "name": "sinder2221", "url": "https://github.com/sinder2221" },
   "plugins": [
     {
       "name": "ponytail-forge",

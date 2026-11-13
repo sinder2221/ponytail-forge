@@ -16,14 +16,14 @@ Inside a conversation the optimizer forks the session, so it sees what is alread
 
 ## Install (every session, every project)
 
-This folder is its own local marketplace. Add it and install the plugin at user scope:
+This repository is its own marketplace. Add it and install the plugin at user scope:
 
 ```
-claude plugin marketplace add /path/to/ponytail-forge
+claude plugin marketplace add sinder2221/ponytail-forge
 claude plugin install ponytail-forge@ponytail-forge --scope user
 ```
 
-The marketplace records this folder's path, so keep the folder where it is, or add it again from the new path after moving it.
+From a local clone, use its path instead of `sinder2221/ponytail-forge`. The marketplace records that path, so add it again after moving the folder.
 
 The fork replaces ponytail. Turn the original off so hooks and the panel do not run twice:
 
