@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "ponytail-forge",
+  "description": "Local marketplace for ponytail-forge, a fork of ponytail with a prompt optimizer.",
+  "owner": { "name": "local" },
+  "plugins": [
+    {
+      "name": "ponytail-forge",
+      "description": "Fork of ponytail 5.3.2 with a Prompt Optimizer panel (grill, then forge).",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
