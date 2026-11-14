@@ -595,45 +595,81 @@ export const register: Register = (on, options) => {
     const q = o.pending[o.cur]
     const typing = o.custom.trim() !== ''
     const pad = e.surface === 'desktop' ? 1 : 0
-    const rowsFor = (text: string) => fieldRows(text, e.props.bodyColumns, e.props.scroll.bodyRows, e.surface === 'desktop')
-    // Ideal Finans' palette where the pane can colour it: gold as the one accent, slate for secondary text. Corners are sharp.
+    const cols = e.props.bodyColumns
+    const rowsFor = (text: string) => fieldRows(text, cols, e.props.scroll?.bodyRows ?? 20, e.surface === 'desktop')
+    // Ideal Finans' palette where the pane can colour it: gold marks the choice and the result, slate is the muted tone.
+    // shortcut: one muted colour for both themes, as the pane cannot read the app's light or dark; slate is weaker on dark.
     const GOLD = '#A98B4F'
     const SLATE = '#5A6A79'
+    // A button with nothing to do in this phase stays on screen, dimmed, so the bar never changes shape.
+    const btn = (key: string, label: string, onPress: () => unknown, enabled = true) =>
+      enabled ? <Button key={key} variant="secondary" label={label} onPress={onPress} /> : <Button key={key} plain dimColor label={label} onPress={() => undefined} />
+    const finished = o.phase === 'done'
+    const last = o.rounds[o.rounds.length - 1]
+    const MARK = ' (accepted recommendation)'
 
     return (
-      <Box flexDirection="column" gap={1} width={e.props.bodyColumns}>
-        {/* Its own framed block: the border and a fill set it off the pane, and the column's gap keeps it from the content. */}
-        <Box flexDirection="column" gap={1} borderStyle="single" borderColor={GOLD} backgroundColor="subtle" paddingX={1} paddingY={pad}>
-          {o.phase === 'done' && (
-            <Box flexDirection="row" alignItems="center" gap={1}>
-              <Box flexGrow={1}>
-                <Input
-                  key="instruction"
-                  placeholder="Tell it what to change, then Enter"
-                  rows={rowsFor(o.instruction)}
-                  value={o.instruction}
-                  onInput={v => live(() => ({ instruction: v }))}
-                  onSubmit={v => live(() => ({ instruction: v })).then(() => revise(false))}
-                />
-              </Box>
-              <Button key="harder" plain label="Grill harder" onPress={() => revise(true)} />
-            </Box>
-          )}
+      <Box flexDirection="column" gap={1} width={cols}>
+        {/* Its own framed block: the border sets it off the pane, and the column's gap keeps it from the content. */}
+        <Box flexDirection="column" gap={1} borderStyle="single" borderColor={SLATE} paddingX={1} paddingY={pad}>
           <Box flexDirection="row" alignItems="center" gap={1}>
-            <Button key="go" variant="primary" label={o.phase === 'idle' ? 'Optimize draft' : 'Start over'} onPress={optimize} />
-            {o.phase === 'done' && <Button key="use" plain label="Use" onPress={use} />}
-            {o.phase === 'done' && <Button key="copy" plain label="Copy" onPress={copy} />}
-            <Box flexGrow={1} />
-            {o.phase === 'asking' && q !== undefined && <Button key="skip" plain label="Skip" onPress={() => next(true)} />}
-            {o.phase === 'asking' && q !== undefined && <Button key="next" variant="primary" label="Next" onPress={() => next(false)} />}
-            {o.phase === 'asking' && q === undefined && <Button key="retry" variant="primary" label="Send answers" onPress={send} />}
+            {btn('go', o.phase === 'idle' ? 'Optimize draft' : 'Start over', optimize)}
+            {btn('use', 'Use', use, finished)}
+            {btn('copy', 'Copy', copy, finished)}
+          </Box>
+          <Box flexDirection="row" alignItems="flex-start" gap={1}>
+            <Box flexGrow={1}>
+              <Input
+                key="instruction"
+                placeholder="Instruktion til Grill harder…"
+                rows={rowsFor(o.instruction)}
+                value={finished ? o.instruction : ''}
+                onInput={v => finished && live(() => ({ instruction: v }))}
+                onSubmit={v => finished && live(() => ({ instruction: v })).then(() => revise(false))}
+              />
+            </Box>
+            {btn('harder', 'Grill harder', () => revise(true), finished)}
           </Box>
         </Box>
-        {o.phase === 'idle' && <Text dimColor>Type a draft in the prompt box, then press Optimize draft.</Text>}
-        {o.phase === 'working' && <Text dimColor>Thinking…</Text>}
         {o.error !== '' && <Text color="error">{o.error}</Text>}
-        {o.phase === 'asking' && q !== undefined && (
+        {o.phase === 'asking' && q === undefined && btn('retry', 'Send answers', send)}
+        {o.phase === 'idle' && (
           <Box flexDirection="column" gap={1}>
+            <Text bold>Ingen prompt endnu</Text>
+            <Text>Skriv et udkast i promptboksen. Panelet stiller få, korte spørgsmål og skriver en skarpere version, som du kan sætte ind igen.</Text>
+            <Text color={SLATE}>Spørgsmålene kommer ét ad gangen, med en anbefalet mulighed først.</Text>
+            <Box borderStyle="dashed" borderColor={SLATE} height={5} alignItems="center" justifyContent="center">
+              <Text color={SLATE}>Venter på udkast</Text>
+            </Box>
+          </Box>
+        )}
+        {o.phase === 'working' && (
+          <Box flexDirection="column" gap={1}>
+            <Text bold>Skriver en skarpere version</Text>
+            <Text>{last === undefined ? 'Udkastet er sendt.' : 'Runden er sendt.'}</Text>
+            <Box borderStyle="single" borderColor={SLATE}>
+              <Box width="60%" height={1} backgroundColor={GOLD} />
+            </Box>
+            {last !== undefined && (
+              <Box flexDirection="column" borderStyle="single" borderColor={SLATE} paddingX={1} paddingY={pad}>
+                <Text bold>Svar i denne runde</Text>
+                {last.questions.map((lq, j) => {
+                  const a = last.answers[j] ?? ''
+                  return (
+                    <Box key={`r${j}`} flexDirection="row" gap={1}>
+                      <Box width={14} flexShrink={0}>
+                        <Text color={SLATE} wrap="truncate-end">{lq.title}</Text>
+                      </Box>
+                      <Text>{a.endsWith(MARK) ? `Skip: ${a.slice(0, -MARK.length)}` : a}</Text>
+                    </Box>
+                  )
+                })}
+              </Box>
+            )}
+          </Box>
+        )}
+        {o.phase === 'asking' && q !== undefined && (
+          <Box flexDirection="column" gap={1} borderStyle="single" borderColor={SLATE} paddingX={1} paddingY={pad}>
             <Box flexDirection="row" gap={1}>
               <Text bold>{q.title}</Text>
               <Box flexGrow={1} />
@@ -644,12 +680,12 @@ export const register: Register = (on, options) => {
               {choices(q).map((opt, i) => {
                 const picked = !typing && o.choice === i
                 return (
-                  <Button
-                    key={`opt-${i}`}
-                    label={`${picked ? '●' : '○'} ${opt}${i === 0 ? ' (recommended)' : ''}`}
-                    {...(picked ? { variant: 'primary' as const } : { plain: true as const })}
-                    onPress={() => live(() => ({ choice: i, custom: '' }))}
-                  />
+                  <Box key={`o${i}`} borderStyle={picked ? 'bold' : 'single'} borderColor={picked ? GOLD : SLATE}>
+                    <Button key={`opt-${i}`} plain onPress={() => live(() => ({ choice: i, custom: '' }))}>
+                      <Text bold={picked}>{`(${picked ? '•' : ' '}) ${opt}`}</Text>
+                      {i === 0 && <Text color={SLATE}>{'    Recommended'}</Text>}
+                    </Button>
+                  </Box>
                 )
               })}
             </Box>
@@ -661,20 +697,38 @@ export const register: Register = (on, options) => {
               onInput={v => live(() => ({ custom: v }))}
               onSubmit={v => next(false, v)}
             />
+            <Box flexDirection="row" alignItems="center">
+              {btn('skip', 'Skip', () => next(true))}
+              <Box flexGrow={1} />
+              {btn('next', 'Next', () => next(false))}
+            </Box>
+            <Text color={SLATE}>Skip bruger den anbefalede mulighed. Efter sidste spørgsmål sendes runden automatisk.</Text>
           </Box>
         )}
-        {o.phase === 'done' && (
+        {finished && (
           <Box flexDirection="column" gap={1}>
             <Box flexDirection="column">
-              <Text color={SLATE}>optimized</Text>
-              <Text>{o.optimized}</Text>
+              <Text bold>Optimized prompt</Text>
+              <Box borderStyle="bold" borderColor={GOLD} paddingX={1} paddingY={pad}>
+                <Text>{o.optimized}</Text>
+              </Box>
             </Box>
-            {o.note !== '' && <Text color={SLATE}>{o.note}</Text>}
+            {o.note !== '' && (
+              <Box flexDirection="column">
+                <Text bold>Note</Text>
+                <Text>{o.note}</Text>
+              </Box>
+            )}
             {o.assumptions.length > 0 && (
               <Box flexDirection="column">
-                <Text color={SLATE}>assumptions</Text>
+                <Text bold>Assumptions</Text>
                 {o.assumptions.map((a, i) => (
-                  <Text key={`s${i}`} color={SLATE}>{`· ${a}`}</Text>
+                  <Box key={`s${i}`} flexDirection="row" gap={1}>
+                    <Box width={2} flexShrink={0}>
+                      <Text color={SLATE}>{`${i + 1}`}</Text>
+                    </Box>
+                    <Text>{a}</Text>
+                  </Box>
                 ))}
               </Box>
             )}

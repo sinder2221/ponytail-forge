@@ -30,8 +30,8 @@ answer**, then up to two **alternatives** as `options` (the recommended answer
 first). Questions are shown one at a time and the person can skip to the
 recommendation, so make each one a real default, not a hedge.
 
-Finding facts is your job. If the answer is in the conversation, the repository
-or the tools, look it up instead of asking.
+Finding facts is your job. If the answer is in the conversation, use it instead
+of asking. You have no tools, so never look anything up.
 
 Stop when the frontier is empty or two rounds are done. Never invent an answer
 to a question you did not ask: a gap you fill yourself is an assumption and

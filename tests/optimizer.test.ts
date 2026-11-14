@@ -292,6 +292,44 @@ test('the answer field grows with the typed text, stops at 40% of the pane and s
   }
 })
 
+test('the bar has the same buttons and field in every phase, and the dimmed ones do nothing before a result', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  let filled = 0
+  on('prompt.fill', () => {
+    filled++
+    return { isFilled: true as const }
+  })
+  on('ui.copy', () => ({ value: { isCopied: true as const } }))
+  on('ui.toast', () => ({ value: undefined }))
+  const { replies } = model(on)
+  for (const surface of SURFACES) {
+    replies.push(answered(ask('Audience')), answered(done('Prompt.')))
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const bar = async () => (await Promise.all(['go', 'use', 'copy', 'instruction', 'harder'].map(key => ui.find({ key })))).every(x => x !== undefined)
+    expect(await bar()).toBe(true)
+    // The state outlives the mount, so only the first surface starts with no result.
+    if (surface === 'terminal') {
+      await ui.press({ key: 'use' })
+      await ui.press({ key: 'harder' })
+      await ui.input({ key: 'instruction', text: 'too early', kind: 'submit' })
+      expect(filled).toBe(0)
+      expect(await ui.find({ type: 'Text', text: /Ingen prompt endnu/ })).toBeDefined()
+    }
+
+    await ui.press({ key: 'go' })
+    expect(await bar()).toBe(true)
+    expect(await ui.find({ key: 'skip' })).toBeDefined()
+    await ui.press({ key: 'skip' })
+    expect(await bar()).toBe(true)
+    expect(await ui.find({ type: 'Text', text: /^Prompt\.$/ })).toBeDefined()
+    await ui.press({ key: 'use' })
+    expect(filled).toBe(1)
+    filled = 0
+    await ui.unmount()
+  }
+})
+
 test('a failed model call keeps the answers, and the same button retries', async ($, on) => {
   mock.clock(on)
   mock.store(on)
