@@ -6,9 +6,9 @@ A fork of [ponytail](https://github.com/DietrichGebert/ponytail) 5.3.2 (MIT, Die
 
 An `Optimize` switch in the grey panel above the prompt box (next to `Review`, `Audit` and `Board`). Switching it on opens a side panel:
 
-1. Type a draft in the prompt box and press **Optimize draft**. The panel shows the original.
-2. The model judges the draft on nine dimensions (task, input, output, constraints, context, audience, memory, success criteria, examples) and, only if something that matters is open, asks up to three questions per round, two rounds at most. Each question has a recommended answer; an empty answer takes it. **Accept all recommendations** answers a whole round in one click.
-3. It writes one tight prompt and lists the assumptions (every accepted recommendation and every gap it filled). **Use** puts it in the prompt box, **Copy** copies it, **Grill harder** asks for another round.
+1. Type a draft in the prompt box and press **Optimize draft**.
+2. The model judges the draft on nine dimensions (task, input, output, constraints, context, audience, memory, success criteria, examples) and, only if something that matters is open, asks up to three questions per round, two rounds at most. The questions come one at a time with the recommended answer first and up to two alternatives; pick one or type your own and press **Next**. **Skip** takes the recommendation. After the last question the round goes to the model by itself.
+3. It writes one tight prompt and lists the assumptions (every accepted recommendation and every gap it filled). **Use** puts it in the prompt box, **Copy** copies it, **Grill harder** asks for another round. The field above takes an instruction ("shorter", "for a board audience") and revises the prompt on Enter. The panel does not repeat your draft; it is already in the chat.
 
 The method lives in `skills/prompt-optimizer/SKILL.md`, which also works as a normal skill (`/ponytail-forge:prompt-optimizer`). It borrows the nine dimensions and the token audit from prompt-master (MIT, nidhinjs) and the question rounds from "grill me".
 

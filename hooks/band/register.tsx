@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import { boardHtml, tasksFrom } from './board'
-import { EMPTY_OPT, applyReply, buildPrompt, closeRound, parseReply, skillBody } from './optimizer'
+import { EMPTY_OPT, advance, applyReply, buildPrompt, choices, closeRound, fieldRows, parseReply, roundDone, skillBody } from './optimizer'
 import type { Band, Optimizer } from './types'
 import type { Col } from './metrics'
 import {
@@ -560,20 +560,29 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  // The optimizer panel: the draft, the grill questions, then the forged prompt.
+  // The optimizer panel: one grill question at a time, then the forged prompt and a field to revise it.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const o = await loadOpt($)
     const { Box, Text, Button, Input } = $.ui.resolve(e)
 
+    const live = (f: (x: Optimizer) => Partial<Optimizer>) => update($, optimizer, x => ({ ...EMPTY_OPT, ...x, ...f({ ...EMPTY_OPT, ...x }) }))
     const optimize = async () => {
       const { text } = await $.prompt.read()
       if (text.trim() === '') return $.ui.toast('Type a draft in the prompt box first')
       await step($, options, false, x => ({ ...EMPTY_OPT, on: x.on, run: x.run, original: text }))
     }
-    const send = () => step($, options, false, x => (x.phase === 'asking' ? closeRound(x) : undefined))
-    const harder = () => step($, options, true, x => (x.phase === 'done' ? x : undefined))
-    const setAnswer = (i: number, v: string) =>
-      update($, optimizer, x => ({ ...EMPTY_OPT, ...x, answers: x.answers.map((a, j) => (j === i ? v : a)) }))
+    // The round goes to the model by itself once the last question is answered; a second press finds nothing to send.
+    const send = () => step($, options, false, x => (roundDone(x) ? closeRound(x) : undefined))
+    // `typed` is what an Enter in the field carried; it is saved before the answer is read.
+    const next = async (skip: boolean, typed?: string) => {
+      const after = await update($, optimizer, x => {
+        const y = { ...EMPTY_OPT, ...x }
+        return advance(typed === undefined ? y : { ...y, custom: typed }, skip)
+      })
+      if (roundDone(after)) await send()
+    }
+    // Both the field's Enter and Grill harder take the instruction typed so far; an empty field alone does nothing.
+    const revise = (push: boolean) => step($, options, push, x => (x.phase === 'done' && (push || x.instruction.trim() !== '') ? x : undefined))
     const use = async () => {
       const r = await $.prompt.fill({ text: o.optimized, mode: 'replace' })
       $.ui.toast(r.isFilled ? 'Optimized prompt is in the prompt box' : 'Could not fill the prompt box')
@@ -582,53 +591,90 @@ export const register: Register = (on, options) => {
       const r = await $.ui.copy({ text: o.optimized, surface: e.surface })
       $.ui.toast(r.isCopied ? 'Optimized prompt copied' : `Copy failed: ${r.reason}`)
     }
-    const accepting = o.answers.every(a => a.trim() === '')
+
+    const q = o.pending[o.cur]
+    const typing = o.custom.trim() !== ''
+    const pad = e.surface === 'desktop' ? 1 : 0
+    const rowsFor = (text: string) => fieldRows(text, e.props.bodyColumns, e.props.scroll.bodyRows, e.surface === 'desktop')
+    // Ideal Finans' palette where the pane can colour it: gold as the one accent, slate for secondary text. Corners are sharp.
+    const GOLD = '#A98B4F'
+    const SLATE = '#5A6A79'
 
     return (
       <Box flexDirection="column" gap={1} width={e.props.bodyColumns}>
-        <Box flexDirection="row" gap={1}>
-          <Button key="go" variant="primary" label={o.phase === 'idle' ? 'Optimize draft' : 'Start over'} onPress={optimize} />
-          {o.phase === 'asking' && <Button key="send" plain label={accepting ? 'Accept all recommendations' : 'Send answers'} onPress={send} />}
-          {o.phase === 'done' && <Button key="use" plain label="Use" onPress={use} />}
-          {o.phase === 'done' && <Button key="copy" plain label="Copy" onPress={copy} />}
-          {o.phase === 'done' && <Button key="harder" plain label="Grill harder" onPress={harder} />}
+        {/* Its own framed block: the border and a fill set it off the pane, and the column's gap keeps it from the content. */}
+        <Box flexDirection="column" gap={1} borderStyle="single" borderColor={GOLD} backgroundColor="subtle" paddingX={1} paddingY={pad}>
+          {o.phase === 'done' && (
+            <Box flexDirection="row" alignItems="center" gap={1}>
+              <Box flexGrow={1}>
+                <Input
+                  key="instruction"
+                  placeholder="Tell it what to change, then Enter"
+                  rows={rowsFor(o.instruction)}
+                  value={o.instruction}
+                  onInput={v => live(() => ({ instruction: v }))}
+                  onSubmit={v => live(() => ({ instruction: v })).then(() => revise(false))}
+                />
+              </Box>
+              <Button key="harder" plain label="Grill harder" onPress={() => revise(true)} />
+            </Box>
+          )}
+          <Box flexDirection="row" alignItems="center" gap={1}>
+            <Button key="go" variant="primary" label={o.phase === 'idle' ? 'Optimize draft' : 'Start over'} onPress={optimize} />
+            {o.phase === 'done' && <Button key="use" plain label="Use" onPress={use} />}
+            {o.phase === 'done' && <Button key="copy" plain label="Copy" onPress={copy} />}
+            <Box flexGrow={1} />
+            {o.phase === 'asking' && q !== undefined && <Button key="skip" plain label="Skip" onPress={() => next(true)} />}
+            {o.phase === 'asking' && q !== undefined && <Button key="next" variant="primary" label="Next" onPress={() => next(false)} />}
+            {o.phase === 'asking' && q === undefined && <Button key="retry" variant="primary" label="Send answers" onPress={send} />}
+          </Box>
         </Box>
         {o.phase === 'idle' && <Text dimColor>Type a draft in the prompt box, then press Optimize draft.</Text>}
-        {o.original !== '' && (
-          <Box flexDirection="column">
-            <Text dimColor>original</Text>
-            <Text>{o.original}</Text>
-          </Box>
-        )}
         {o.phase === 'working' && <Text dimColor>Thinking…</Text>}
         {o.error !== '' && <Text color="error">{o.error}</Text>}
-        {o.phase === 'asking' &&
-          o.pending.map((q, i) => (
-            <Box key={`q${i}`} flexDirection="column">
-              <Text bold>{`${i + 1}. ${q.title}`}</Text>
-              <Text>{q.body}</Text>
-              <Text dimColor>{`recommended: ${q.recommended}`}</Text>
-              <Input
-                key={`a${i}`}
-                placeholder="empty = take the recommendation"
-                value={o.answers[i] ?? ''}
-                onInput={v => setAnswer(i, v)}
-                onSubmit={v => setAnswer(i, v)}
-              />
+        {o.phase === 'asking' && q !== undefined && (
+          <Box flexDirection="column" gap={1}>
+            <Box flexDirection="row" gap={1}>
+              <Text bold>{q.title}</Text>
+              <Box flexGrow={1} />
+              <Text color={SLATE}>{`${o.cur + 1}/${o.pending.length}`}</Text>
             </Box>
-          ))}
+            {q.body !== '' && <Text>{q.body}</Text>}
+            <Box flexDirection="column">
+              {choices(q).map((opt, i) => {
+                const picked = !typing && o.choice === i
+                return (
+                  <Button
+                    key={`opt-${i}`}
+                    label={`${picked ? '●' : '○'} ${opt}${i === 0 ? ' (recommended)' : ''}`}
+                    {...(picked ? { variant: 'primary' as const } : { plain: true as const })}
+                    onPress={() => live(() => ({ choice: i, custom: '' }))}
+                  />
+                )
+              })}
+            </Box>
+            <Input
+              key="custom"
+              placeholder="Type something else…"
+              rows={rowsFor(o.custom)}
+              value={o.custom}
+              onInput={v => live(() => ({ custom: v }))}
+              onSubmit={v => next(false, v)}
+            />
+          </Box>
+        )}
         {o.phase === 'done' && (
           <Box flexDirection="column" gap={1}>
             <Box flexDirection="column">
-              <Text dimColor>optimized</Text>
+              <Text color={SLATE}>optimized</Text>
               <Text>{o.optimized}</Text>
             </Box>
-            {o.note !== '' && <Text dimColor>{o.note}</Text>}
+            {o.note !== '' && <Text color={SLATE}>{o.note}</Text>}
             {o.assumptions.length > 0 && (
               <Box flexDirection="column">
-                <Text dimColor>assumptions</Text>
+                <Text color={SLATE}>assumptions</Text>
                 {o.assumptions.map((a, i) => (
-                  <Text key={`s${i}`} dimColor>{`· ${a}`}</Text>
+                  <Text key={`s${i}`} color={SLATE}>{`· ${a}`}</Text>
                 ))}
               </Box>
             )}

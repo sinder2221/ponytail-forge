@@ -26,8 +26,9 @@ another open question waits for a later round. Ask only the **frontier**, the
 questions that can be answered now, at most three per round.
 
 Give each question a title, the question itself, and your **recommended
-answer**. The person can accept every recommendation in one step, so make each
-one a real default, not a hedge.
+answer**, then up to two **alternatives** as `options` (the recommended answer
+first). Questions are shown one at a time and the person can skip to the
+recommendation, so make each one a real default, not a hedge.
 
 Finding facts is your job. If the answer is in the conversation, the repository
 or the tools, look it up instead of asking.
