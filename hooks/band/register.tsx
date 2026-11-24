@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import { boardHtml, tasksFrom } from './board'
-import { EMPTY_OPT, applyReply, buildPrompt, closeRound, parseReply, skillBody } from './optimizer'
+import { EMPTY_OPT, advance, applyReply, buildPrompt, choices, closeRound, fieldRows, parseReply, retreat, roundDone, skillBody } from './optimizer'
 import type { Band, Optimizer } from './types'
 import type { Col } from './metrics'
 import {
@@ -133,8 +133,9 @@ async function askModel($: EngineInterface, skill: string, prompt: string, model
 // `prep` sets the state the step starts from, or refuses it (undefined) so a double press starts one call, not two.
 // The run number lets a newer step drop an older, slower reply; a failure puts the state from before the step back
 // with the error, so the typed answers and a forged prompt stay reachable and the same button retries.
+// The comment is read when the step starts; one typed while it runs is kept and used by the next step.
 // shortcut: the fork's cost is part of the session total, so the band's "last $" can include it; it is not split out.
-async function step($: EngineInterface, options: Options, push = false, prep: (o: Optimizer) => Optimizer | undefined = o => o) {
+async function step($: EngineInterface, options: Options, push = false, prep: (o: Optimizer) => Optimizer | undefined = o => o, revise = false) {
   let before = EMPTY_OPT
   const claim = { ok: false }
   const started = await update($, optimizer, x => {
@@ -149,12 +150,15 @@ async function step($: EngineInterface, options: Options, push = false, prep: (o
   try {
     const skill = skillBody(await $.fs.read(`${$.plugin.root}/skills/prompt-optimizer/SKILL.md`))
     const model = typeof options.optimizerModel === 'string' && options.optimizerModel !== '' ? options.optimizerModel : 'sonnet'
-    const reply = parseReply(await askModel($, skill, buildPrompt(started, push), model))
+    const reply = parseReply(await askModel($, skill, buildPrompt(started, push, revise), model))
     if (reply.status === 'error') throw new Error(reply.error)
     await update($, optimizer, x => (({ ...EMPTY_OPT, ...x }).run === run ? applyReply({ ...EMPTY_OPT, ...x }, reply) : x))
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
-    await update($, optimizer, x => (({ ...EMPTY_OPT, ...x }).run === run ? { ...before, run, error } : x))
+    await update($, optimizer, x => {
+      const live = { ...EMPTY_OPT, ...x }
+      return live.run === run ? { ...before, run, error, instruction: live.instruction } : x
+    })
   }
 }
 
@@ -560,20 +564,44 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  // The optimizer panel: the draft, the grill questions, then the forged prompt.
+  // The optimizer panel: a bar with the comment, then one grill question at a time, then the forged prompt.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const o = await loadOpt($)
     const { Box, Text, Button, Input } = $.ui.resolve(e)
 
+    const live = (f: (x: Optimizer) => Partial<Optimizer>) => update($, optimizer, x => ({ ...EMPTY_OPT, ...x, ...f({ ...EMPTY_OPT, ...x }) }))
     const optimize = async () => {
       const { text } = await $.prompt.read()
       if (text.trim() === '') return $.ui.toast('Type a draft in the prompt box first')
-      await step($, options, false, x => ({ ...EMPTY_OPT, on: x.on, run: x.run, original: text }))
+      // The comment stays: it belongs to the whole job, not to one run.
+      await step($, options, false, x => ({ ...EMPTY_OPT, on: x.on, run: x.run, original: text, instruction: x.instruction }))
     }
-    const send = () => step($, options, false, x => (x.phase === 'asking' ? closeRound(x) : undefined))
-    const harder = () => step($, options, true, x => (x.phase === 'done' ? x : undefined))
-    const setAnswer = (i: number, v: string) =>
-      update($, optimizer, x => ({ ...EMPTY_OPT, ...x, answers: x.answers.map((a, j) => (j === i ? v : a)) }))
+    // The round goes to the model by itself once the last question is answered; a second press finds nothing to send.
+    const send = () => step($, options, false, x => (roundDone(x) ? closeRound(x) : undefined))
+    // After a move to another question: its top in view, the keyboard in its field. Either may be refused; that is fine.
+    const settle = async () => {
+      try {
+        await $.ui.scroll({ in: PANE, to: 'start' })
+        await $.ui.focus({ requestId: PANE, key: 'custom' })
+      } catch {
+        // No surface to move on (a headless run): nothing to do.
+      }
+    }
+    // `typed` is what an Enter in the field carried; it is saved before the answer is read.
+    const next = async (skip: boolean, typed?: string) => {
+      const after = await update($, optimizer, x => {
+        const y = { ...EMPTY_OPT, ...x }
+        return advance(typed === undefined ? y : { ...y, custom: typed }, skip)
+      })
+      if (roundDone(after)) await send()
+      else await settle()
+    }
+    const back = async () => {
+      await update($, optimizer, x => retreat({ ...EMPTY_OPT, ...x }))
+      await settle()
+    }
+    // Enter in the comment field rewrites a finished prompt by the comment; Grill harder sends the comment as context only.
+    const revise = (push: boolean) => step($, options, push, x => (x.phase === 'done' && (push || x.instruction.trim() !== '') ? x : undefined), !push)
     const use = async () => {
       const r = await $.prompt.fill({ text: o.optimized, mode: 'replace' })
       $.ui.toast(r.isFilled ? 'Optimized prompt is in the prompt box' : 'Could not fill the prompt box')
@@ -582,53 +610,155 @@ export const register: Register = (on, options) => {
       const r = await $.ui.copy({ text: o.optimized, surface: e.surface })
       $.ui.toast(r.isCopied ? 'Optimized prompt copied' : `Copy failed: ${r.reason}`)
     }
-    const accepting = o.answers.every(a => a.trim() === '')
+
+    const q = o.pending[o.cur]
+    const typing = o.custom.trim() !== ''
+    const pad = e.surface === 'desktop' ? 1 : 0
+    const cols = e.props.bodyColumns
+    const rowsFor = (text: string) => fieldRows(text, cols, e.props.scroll?.bodyRows ?? 20, e.surface === 'desktop')
+    // The host's Input refuses a value over 16384 characters.
+    const clip = (text: string) => text.slice(0, 16384)
+    // Ideal Finans' palette where the pane can colour it: gold marks the choice and the result, slate frames the blocks.
+    // Hint text uses dimColor, which follows the app's light or dark theme.
+    const GOLD = '#A98B4F'
+    const SLATE = '#5A6A79'
+    // A button with nothing to do in this phase stays on screen, dimmed, so the bar never changes shape.
+    const btn = (key: string, label: string, onPress: () => unknown, enabled = true, primary = false) =>
+      enabled ? <Button key={key} variant={primary ? 'primary' : 'secondary'} label={label} onPress={onPress} /> : <Button key={key} plain dimColor label={label} onPress={() => undefined} />
+    const finished = o.phase === 'done'
+    const lastQuestion = o.cur === o.pending.length - 1
+    const last = o.rounds[o.rounds.length - 1]
+    const MARK = ' (accepted recommendation)'
 
     return (
-      <Box flexDirection="column" gap={1} width={e.props.bodyColumns}>
-        <Box flexDirection="row" gap={1}>
-          <Button key="go" variant="primary" label={o.phase === 'idle' ? 'Optimize draft' : 'Start over'} onPress={optimize} />
-          {o.phase === 'asking' && <Button key="send" plain label={accepting ? 'Accept all recommendations' : 'Send answers'} onPress={send} />}
-          {o.phase === 'done' && <Button key="use" plain label="Use" onPress={use} />}
-          {o.phase === 'done' && <Button key="copy" plain label="Copy" onPress={copy} />}
-          {o.phase === 'done' && <Button key="harder" plain label="Grill harder" onPress={harder} />}
-        </Box>
-        {o.phase === 'idle' && <Text dimColor>Type a draft in the prompt box, then press Optimize draft.</Text>}
-        {o.original !== '' && (
+      <Box flexDirection="column" gap={1} width={cols}>
+        {/* Its own framed block: the border sets it off the pane, and the column's gap keeps it from the content. */}
+        <Box flexDirection="column" gap={1} borderStyle="single" borderColor={SLATE} paddingX={1} paddingY={pad}>
+          <Box flexDirection="row" alignItems="center" gap={1}>
+            {btn('go', o.phase === 'idle' ? 'Optimize draft' : 'Start over', optimize, true, o.phase === 'idle')}
+            {btn('use', 'Use', use, finished)}
+            {btn('copy', 'Copy', copy, finished)}
+          </Box>
           <Box flexDirection="column">
-            <Text dimColor>original</Text>
-            <Text>{o.original}</Text>
+            <Text bold>Kommentar</Text>
+            <Text dimColor>Formål og ønsket resultat. Indsæt gerne eksempler. Læses i alle runder og kopieres ikke ordret ind i resultatet.</Text>
+          </Box>
+          <Input
+            key="instruction"
+            placeholder="Skriv en kommentar, eller indsæt et eksempel…"
+            rows={rowsFor(o.instruction)}
+            value={clip(o.instruction)}
+            onInput={v => live(() => ({ instruction: v }))}
+            onSubmit={v => live(() => ({ instruction: v })).then(() => revise(false))}
+          />
+          <Box flexDirection="row" alignItems="center" gap={1}>
+            {btn('harder', 'Grill harder', () => revise(true), finished)}
+            {finished && <Text dimColor>Enter retter resultatet efter kommentaren.</Text>}
+          </Box>
+        </Box>
+        {o.error !== '' && <Text color="error">{o.error}</Text>}
+        {o.phase === 'asking' && q === undefined && (
+          <Box flexDirection="row" gap={1}>
+            {btn('back', 'Back', back, o.cur > 0)}
+            {btn('retry', 'Send answers', send, true, true)}
           </Box>
         )}
-        {o.phase === 'working' && <Text dimColor>Thinking…</Text>}
-        {o.error !== '' && <Text color="error">{o.error}</Text>}
-        {o.phase === 'asking' &&
-          o.pending.map((q, i) => (
-            <Box key={`q${i}`} flexDirection="column">
-              <Text bold>{`${i + 1}. ${q.title}`}</Text>
-              <Text>{q.body}</Text>
-              <Text dimColor>{`recommended: ${q.recommended}`}</Text>
-              <Input
-                key={`a${i}`}
-                placeholder="empty = take the recommendation"
-                value={o.answers[i] ?? ''}
-                onInput={v => setAnswer(i, v)}
-                onSubmit={v => setAnswer(i, v)}
-              />
+        {o.phase === 'idle' && (
+          <Box flexDirection="column" gap={1}>
+            <Text bold>Ingen prompt endnu</Text>
+            <Text>Skriv et udkast i promptboksen. Panelet stiller få, korte spørgsmål og skriver en skarpere version, som du kan sætte ind igen.</Text>
+            <Text dimColor>Spørgsmålene kommer ét ad gangen, med en anbefalet mulighed først.</Text>
+          </Box>
+        )}
+        {o.phase === 'working' && (
+          <Box flexDirection="column" gap={1}>
+            <Text bold>Skriver en skarpere version</Text>
+            <Text>{last === undefined ? 'Udkastet er sendt.' : 'Runden er sendt.'}</Text>
+            {last !== undefined && (
+              <Box flexDirection="column" gap={1} borderStyle="single" borderColor={SLATE} paddingX={1} paddingY={pad}>
+                <Text bold>Svar i denne runde</Text>
+                {last.questions.map((lq, j) => {
+                  const a = last.answers[j] ?? ''
+                  return (
+                    <Box key={`r${j}`} flexDirection="column">
+                      <Text dimColor>{lq.title}</Text>
+                      <Text>{a.endsWith(MARK) ? `Anbefalet: ${a.slice(0, -MARK.length)}` : a}</Text>
+                    </Box>
+                  )
+                })}
+              </Box>
+            )}
+          </Box>
+        )}
+        {o.phase === 'asking' && q !== undefined && (
+          <Box flexDirection="column" gap={1} borderStyle="single" borderColor={SLATE} paddingX={1} paddingY={pad}>
+            <Box flexDirection="row" gap={1}>
+              <Box flexGrow={1} flexShrink={1}>
+                <Text bold>{q.title}</Text>
+              </Box>
+              <Text dimColor>{`${o.cur + 1}/${o.pending.length}`}</Text>
             </Box>
-          ))}
-        {o.phase === 'done' && (
+            {/* The buttons sit above the question: the pane is one scroller, so a tall question must not push them out of reach. */}
+            <Box flexDirection="row" alignItems="center" gap={1}>
+              {btn('back', 'Back', back, o.cur > 0)}
+              {btn('skip', 'Skip', () => next(true))}
+              <Box flexGrow={1} />
+              {btn('next', lastQuestion ? 'Send' : 'Next', () => next(false), true, true)}
+            </Box>
+            {q.body !== '' && <Text>{q.body}</Text>}
+            <Box flexDirection="column">
+              {choices(q).map((opt, i) => {
+                const picked = !typing && o.choice === i
+                // The text is a Text beside a small pick button, not the button's label: a button cuts its label to one
+                // line and cannot be selected, a Text wraps in full and can be copied.
+                return (
+                  <Box key={`o${i}`} flexDirection="row" alignItems="flex-start" gap={1} borderStyle="single" borderColor={picked ? GOLD : SLATE} paddingX={1} paddingY={0}>
+                    <Button key={`opt-${i}`} plain label={picked ? '(•)' : '( )'} onPress={() => live(() => ({ choice: i, custom: '' }))} />
+                    <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+                      <Text bold={picked}>{opt}</Text>
+                      {i === 0 && <Text dimColor>Recommended</Text>}
+                    </Box>
+                  </Box>
+                )
+              })}
+            </Box>
+            <Input
+              key="custom"
+              placeholder="Skriv noget andet, eller indsæt et eksempel…"
+              rows={rowsFor(o.custom)}
+              value={clip(o.custom)}
+              onInput={v => live(() => ({ custom: v }))}
+              onSubmit={v => next(false, v)}
+            />
+            <Text dimColor>Enter = Next, Shift+Enter = ny linje. Skip bruger den anbefalede mulighed. Efter sidste spørgsmål sendes runden.</Text>
+          </Box>
+        )}
+        {finished && (
           <Box flexDirection="column" gap={1}>
             <Box flexDirection="column">
-              <Text dimColor>optimized</Text>
-              <Text>{o.optimized}</Text>
+              <Text bold>Optimized prompt</Text>
+              <Box borderStyle="single" borderColor={GOLD} paddingX={1} paddingY={pad}>
+                <Text>{o.optimized}</Text>
+              </Box>
             </Box>
-            {o.note !== '' && <Text dimColor>{o.note}</Text>}
+            {o.note !== '' && (
+              <Box flexDirection="column">
+                <Text bold>Note</Text>
+                <Text>{o.note}</Text>
+              </Box>
+            )}
             {o.assumptions.length > 0 && (
               <Box flexDirection="column">
-                <Text dimColor>assumptions</Text>
+                <Text bold>Assumptions</Text>
                 {o.assumptions.map((a, i) => (
-                  <Text key={`s${i}`} dimColor>{`· ${a}`}</Text>
+                  <Box key={`s${i}`} flexDirection="row" gap={1}>
+                    <Box width={3} flexShrink={0}>
+                      <Text dimColor>{`${i + 1}`}</Text>
+                    </Box>
+                    <Box flexGrow={1} flexShrink={1}>
+                      <Text>{a}</Text>
+                    </Box>
+                  </Box>
                 ))}
               </Box>
             )}

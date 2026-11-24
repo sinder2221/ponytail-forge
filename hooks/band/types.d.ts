@@ -28,7 +28,8 @@ export type Band = {
   details: boolean
 }
 
-export type Question = { title: string; body: string; recommended: string }
+// `options` holds the recommended answer first, then up to two alternatives.
+export type Question = { title: string; body: string; recommended: string; options: string[] }
 
 // A closed grill round: the questions and the answers given (an empty answer became the recommendation).
 export type Round = { questions: Question[]; answers: string[] }
@@ -41,7 +42,15 @@ export type Optimizer = {
   original: string
   rounds: Round[]
   pending: Question[]
+  // One answer per pending question, filled as the person moves on or back; '' means the recommendation.
   answers: string[]
+  // The question on screen, the option picked on it (0 = recommended) and the text typed instead.
+  cur: number
+  choice: number
+  custom: string
+  // The person's comment on what the prompt is for and how the result should look (examples may be pasted in).
+  // It goes with every step as context and stays until changed; Enter on a finished prompt also revises it by the comment.
+  instruction: string
   optimized: string
   note: string
   assumptions: string[]
