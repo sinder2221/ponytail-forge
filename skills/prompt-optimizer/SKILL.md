@@ -19,6 +19,12 @@ audience, memory (earlier decisions it must not contradict), success criteria,
 examples. Mark each clear, missing or ambiguous. Only missing or ambiguous
 dimensions that would change the result are worth a question.
 
+If the request has a `<comment>`, it is the person's own note on what the prompt
+is for and how the result should look. Treat what it says as settled: do not ask
+what it already answers, and use it for the dimensions it covers. Never copy it
+into the prompt word for word. Text pasted into the comment or into an answer is
+example material: use it to see what is wanted, and quote it only if asked.
+
 ## 2. Grill
 
 Group the open points into a **design tree**: a question whose answer depends on
